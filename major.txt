@@ -1,0 +1,1338 @@
+// 1. Install dependencies:
+// npm install nodemailer @types/nodemailer
+// npm install jsonwebtoken @types/jsonwebtoken
+
+// 2. Create API route: app/api/send-permission/route.ts
+import { NextRequest, NextResponse } from 'next/server';
+import nodemailer from 'nodemailer';
+import jwt from 'jsonwebtoken';
+
+const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
+const BASE_URL = process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000';
+
+export async function POST(request: NextRequest) {
+  try {
+    const { email, permission, expiresIn = '7d' } = await request.json();
+
+    // Generate a secure token with permission details
+    const token = jwt.sign(
+      { email, permission, timestamp: Date.now() },
+      JWT_SECRET,
+      { expiresIn }
+    );
+
+    // Create confirmation link
+    const confirmLink = `${BASE_URL}/confirm-permission?token=${token}`;
+
+    // Configure email transporter (using Gmail as example)
+    const transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASSWORD, // Use App Password for Gmail
+      },
+    });
+
+    // Email content
+    const mailOptions = {
+      from: process.env.EMAIL_USER,
+      to: email,
+      subject: 'Permission Request Confirmation',
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2>Permission Request</h2>
+          <p>You have been requested to grant the following permission:</p>
+          <p style="background: #f5f5f5; padding: 15px; border-radius: 5px;">
+            <strong>${permission}</strong>
+          </p>
+          <p>Click the button below to confirm your permission:</p>
+          <a href="${confirmLink}" 
+             style="display: inline-block; background: #0070f3; color: white; 
+                    padding: 12px 24px; text-decoration: none; border-radius: 5px; 
+                    margin: 20px 0;">
+            Confirm Permission
+          </a>
+          <p style="color: #666; font-size: 14px;">
+            This link will expire in 7 days.
+          </p>
+          <p style="color: #666; font-size: 14px;">
+            If you didn't expect this email, you can safely ignore it.
+          </p>
+        </div>
+      `,
+    };
+
+    await transporter.sendMail(mailOptions);
+
+    return NextResponse.json({ 
+      success: true, 
+      message: 'Permission email sent successfully' 
+    });
+  } catch (error) {
+    console.error('Error sending email:', error);
+    return NextResponse.json(
+      { success: false, error: 'Failed to send email' },
+      { status: 500 }
+    );
+  }
+}
+
+// 3. Create confirmation page: app/confirm-permission/page.tsx
+'use client';
+
+import { useEffect, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
+
+export default function ConfirmPermission() {
+  const searchParams = useSearchParams();
+  const [status, setStatus] = useState<'loading' | 'success' | 'error'>('loading');
+  const [message, setMessage] = useState('');
+
+  useEffect(() => {
+    const token = searchParams.get('token');
+    if (!token) {
+      setStatus('error');
+      setMessage('Invalid confirmation link');
+      return;
+    }
+
+    confirmPermission(token);
+  }, [searchParams]);
+
+  const confirmPermission = async (token: string) => {
+    try {
+      const response = await fetch('/api/confirm-permission', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token }),
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        setStatus('success');
+        setMessage('Permission confirmed successfully!');
+      } else {
+        setStatus('error');
+        setMessage(data.error || 'Failed to confirm permission');
+      }
+    } catch (error) {
+      setStatus('error');
+      setMessage('An error occurred. Please try again.');
+    }
+  };
+
+  return (
+    <div style={{ 
+      maxWidth: '600px', 
+      margin: '50px auto', 
+      padding: '20px',
+      textAlign: 'center' 
+    }}>
+      {status === 'loading' && <p>Confirming your permission...</p>}
+      {status === 'success' && (
+        <div style={{ color: 'green' }}>
+          <h2>✓ Success</h2>
+          <p>{message}</p>
+        </div>
+      )}
+      {status === 'error' && (
+        <div style={{ color: 'red' }}>
+          <h2>✗ Error</h2>
+          <p>{message}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// 4. Create confirmation API: app/api/confirm-permission/route.ts
+import { NextRequest, NextResponse } from 'next/server';
+import jwt from 'jsonwebtoken';
+
+const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
+
+export async function POST(request: NextRequest) {
+  try {
+    const { token } = await request.json();
+
+    // Verify token
+    const decoded = jwt.verify(token, JWT_SECRET) as {
+      email: string;
+      permission: string;
+      timestamp: number;
+    };
+
+    // Store permission in your database
+    // await db.permissions.create({
+    //   email: decoded.email,
+    //   permission: decoded.permission,
+    //   confirmedAt: new Date(),
+    // });
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        email: decoded.email,
+        permission: decoded.permission,
+      },
+    });
+  } catch (error) {
+    if (error instanceof jwt.TokenExpiredError) {
+      return NextResponse.json(
+        { success: false, error: 'Link has expired' },
+        { status: 400 }
+      );
+    }
+    return NextResponse.json(
+      { success: false, error: 'Invalid or expired token' },
+      { status: 400 }
+    );
+  }
+}
+
+// 5. Example usage in a component:
+// app/components/PermissionForm.tsx
+'use client';
+
+import { useState } from 'react';
+
+export default function PermissionForm() {
+  const [email, setEmail] = useState('');
+  const [permission, setPermission] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState('');
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setMessage('');
+
+    try {
+      const response = await fetch('/api/send-permission', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, permission }),
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        setMessage('Permission email sent successfully!');
+        setEmail('');
+        setPermission('');
+      } else {
+        setMessage('Failed to send email. Please try again.');
+      }
+    } catch (error) {
+      setMessage('An error occurred. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit} style={{ maxWidth: '400px', margin: '0 auto' }}>
+      <div style={{ marginBottom: '15px' }}>
+        <label>Email:</label>
+        <input
+          type="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          required
+          style={{ width: '100%', padding: '8px' }}
+        />
+      </div>
+      <div style={{ marginBottom: '15px' }}>
+        <label>Permission:</label>
+        <input
+          type="text"
+          value={permission}
+          onChange={(e) => setPermission(e.target.value)}
+          required
+          style={{ width: '100%', padding: '8px' }}
+        />
+      </div>
+      <button 
+        type="submit" 
+        disabled={loading}
+        style={{ width: '100%', padding: '10px' }}
+      >
+        {loading ? 'Sending...' : 'Send Permission Request'}
+      </button>
+      {message && <p style={{ marginTop: '15px' }}>{message}</p>}
+    </form>
+  );
+}
+
+// 6. Environment variables (.env.local):
+// JWT_SECRET=your-super-secret-jwt-key-change-this
+// EMAIL_USER=your-email@gmail.com
+// EMAIL_PASSWORD=your-app-password
+// NEXT_PUBLIC_BASE_URL=http://localhost:3000
+
+ใช้สำหรับ ลงเมล์
+
+// Email content
+    const mailOptions = {
+      from: process.env.EMAIL_USER,
+      to: email,
+      subject: 'ขออนุมัติจาก บุคคลนั้น',
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2>เรียน ผศ.ดร.ปรวัน แพทยานนท์ (ผู้อนุมัติจองห้องคอมพิวเตอร์)</h2>
+          <p style="background: #f5f5f5; padding: 15px; border-radius: 5px;">
+          This email is to confirm that you requested resetting a password.
+          This process required your confirmation by click the button below.
+          </p>
+          <a href="${confirmLink}" 
+             style="display: inline-block; background: #0070f3; color: white; 
+                    padding: 12px 24px; text-decoration: none; border-radius: 5px; 
+                    margin: 20px 0;">
+            Reset My Password
+          </a>
+          <p style="color: #666; font-size: 14px;">
+            This link will expire in 3 days.
+          </p>
+          <p style="color: #666; font-size: 14px;">
+            If you didn't expect this email, you can safely ignore it.
+          </p>
+        </div>
+      `,
+    };
+
+เรียน ผศ.ดร.ปรวัน แพทยานนท์ (ผู้อนุมัติรายการยืม)
+
+    มีนิสิตได้ทำรายการยืมอุปกรณ์ครุภัณฑ์ของวิทยาลัยนวัตกรรมสื่อสารสังคม ผ่านทางเว็บไซต์
+ทั้งนี้ ใคร่ขอรบกวนให้ท่านตรวจสอบรายละเอียดการยืม และอนุมัติหรือไม่อนุมัติรายการยืมดังกล่าว โดยกดปุ่มด้านล่าง
+ตรวจสอบและอนุมัติรายการยืม
+หรือเข้าไปที่เว็บไซต์ http://borrow-equipment.cosci.swu.ac.th/cosci-borrow/endorser/approve/10002
+
+หมายเหตุ: ต้องเข้าเว็บไซต์นี้ด้วย WiFi ของมหาวิทยาลัย หรือ เข้าผ่าน VPN (ดูวิธีการติดตั้งและใช้งาน VPN ที่ http://vpn.swu.ac.th)
+
+Forgot Password :nbvo eszf edxg lxpf
+
+// src/app/api/forget-password/route.ts
+import { NextRequest, NextResponse } from 'next/server';
+import nodemailer from 'nodemailer';
+import crypto from 'crypto';
+import { PrismaClient } from '@prisma/client';
+
+const prisma = new PrismaClient();
+
+// Hash token for security
+function hashToken(token: string): string {
+  return crypto.createHash('sha256').update(token).digest('hex');
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const { email } = await request.json();
+
+    // Validate email
+    if (!email) {
+      return NextResponse.json(
+        { success: false, error: 'Email is required' },
+        { status: 400 }
+      );
+    }
+
+    // Check if user exists
+    const user = await prisma.user.findUnique({
+      where: { email },
+    });
+
+    if (!user) {
+      // Don't reveal if email exists (security best practice)
+      // Still return success to prevent email enumeration
+      return NextResponse.json({ 
+        success: true, 
+        message: 'If that email exists, a reset link has been sent' 
+      });
+    }
+
+    // Generate secure random token
+    const token = crypto.randomBytes(32).toString('hex');
+    const hashedToken = hashToken(token);
+
+    // Delete any existing password reset tokens for this user
+    await prisma.passwordReset.deleteMany({
+      where: { userId: user.id },
+    });
+
+    // Create new password reset token (expires in 1 hour)
+    await prisma.passwordReset.create({
+      data: {
+        userId: user.id,
+        token: hashedToken,
+        expiresAt: new Date(Date.now() + 3600000), // 1 hour
+      },
+    });
+
+    // Create reset link (use unhashed token in URL)
+    const resetLink = `${process.env.NEXT_PUBLIC_BASE_URL}/auth/reset-password?token=${token}`;
+
+    // Configure email transporter
+    const transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS,
+      },
+    });
+
+    // Email content
+    const mailOptions = {
+      from: `"Your App Name" <${process.env.EMAIL_USER}>`,
+      to: email,
+      subject: 'Password Reset Request',
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+          <h2 style="color: #333;">Password Reset Request</h2>
+          <p>You requested to reset your password. Click the button below to reset it:</p>
+          
+          <a href="${resetLink}" 
+             style="display: inline-block; background: #4F46E5; color: white; 
+                    padding: 12px 24px; text-decoration: none; border-radius: 5px; 
+                    margin: 20px 0; font-weight: bold;">
+            Reset Password
+          </a>
+          
+          <p>Or copy and paste this link into your browser:</p>
+          <p style="background: #f5f5f5; padding: 10px; word-break: break-all; border-radius: 5px;">
+            ${resetLink}
+          </p>
+          
+          <p style="color: #e74c3c; font-size: 14px; margin-top: 20px;">
+            ⏰ This link will expire in 1 hour.
+          </p>
+          
+          <p style="color: #666; font-size: 14px;">
+            If you didn't request this password reset, you can safely ignore this email. 
+            Your password will remain unchanged.
+          </p>
+
+          async function sendResetEmail(email: any, confirmLink:any) {
+    let testAccount = await nodemailer.createTestAccount();
+     const transporter = nodemailer.createTransport({
+        host: "smtp.ethereal.email",
+        port: 587,
+        secure: false,
+        auth: {
+            user: testAccount.user,
+            pass: testAccount.pass
+        }
+    });
+  const info = await transporter.sendMail({
+        from: testAccount.user,
+        to: email,
+        subject: 'ขออนุมัติจากผศ.ดร.ปรวัน แพทยานนท์',
+        html: `
+            <p>เรียน ผศ.ดร.ปรวัน แพทยานนท์ (ผู้อนุมัติรายการจองห้อง)</p>
+            <p>มีนิสิตได้ทำรายการยืมอุปกรณ์ครุภัณฑ์ของวิทยาลัยนวัตกรรมสื่อสารสังคม ผ่านทางเว็บไซต์
+              ทั้งนี้ ใคร่ขอรบกวนให้ท่านตรวจสอบรายละเอียดการยืม และอนุมัติหรือไม่อนุมัติรายการยืมดังกล่าว โดยกดปุ่มด้านล่าง
+              ตรวจสอบและอนุมัติรายการยืม
+              </p>
+            <a href="${confirmLink}">อนุมัติ</a>
+            <p>ลิงค์นี้จะหมดอายุภายใน 1 ชั่วโมง</p>
+        `
+    });
+    
+    // Shows preview URL in console
+    console.log("Preview URL: %s", nodemailer.getTestMessageUrl(info));
+
+}
+          
+
+    // POST method with auto-update for expired reservations
+export async function POST(request: Request) {
+  const { searchParams } = new URL(request.url); // 18 Nov 2568
+  const source = searchParams.get('source'); // 18 Nov 2568
+  let connection;
+  try {
+    connection = await mysql.createConnection({
+      host: process.env.DB_HOST,
+      user: process.env.DB_USER,
+      password: process.env.DB_PASSWORD,
+      database: process.env.DB_NAME,
+      charset: 'utf8mb4' //  Add this
+    });
+
+    // First, update any expired reservations
+    const expiredCount = await updateExpiredReservations(connection);
+    console.log(`POST: Updated ${expiredCount} expired reservations`);
+
+     // Validate source parameter first
+    if (source !== 'admin' && source !== 'student') {
+      await connection.end();
+      return NextResponse.json({
+        error: 'Invalid source parameter. Must be "admin" or "student"'
+      }, { status: 400 });
+    }
+
+     const body = await request.json();
+    let username, major, room, seats, advisor;
+if (source === 'admin') {
+      ({ username, major, room, seats } = body);
+      
+      // Validation for admin
+      if (!username || !major || !room || !seats || !Array.isArray(seats)) {
+        await connection.end();
+        return NextResponse.json({
+          error: 'Missing required fields: username, major, room, and seats are required'
+        }, { status: 400 });
+      }
+    } else if (source === 'student') {
+      ({ username, major, room, seats, advisor } = body);
+      
+      // Validation for student (includes advisor)
+      if (!username || !major || !room || !seats || !Array.isArray(seats) || !advisor) {
+        await connection.end();
+        return NextResponse.json({
+          error: 'Missing required fields: username, major, room, seats, and advisor are required'
+        }, { status: 400 });
+      }
+    }
+
+    //const { username, major, room, seats } = await request.json(); //original
+
+    // Validation: Check if required fields are present
+    if (!username || !major || !room || !seats || !Array.isArray(seats) || !advisor) {
+      await connection.end();
+      return NextResponse.json({ 
+        error: 'Missing required fields: username, major, room, seats, and advisor are required' 
+      }, { status: 400 });
+    }
+
+    // Check if any seats are already occupied
+     const seatIds = seats.map((s: any) => s.seat);
+    const placeholders = seatIds.map(() => '?').join(',');
+
+    // Choose table based on source
+    const tableName = source === 'admin' 
+      ? 'nodelogin.staff_bookings' 
+      : 'nodelogin.student_bookings';
+    const checkQuery = `
+      SELECT seat FROM ${tableName}
+      WHERE room = ? AND seat IN (${placeholders}) AND (status = 'occupied' OR status = 'pending')
+    `;
+
+    const [existingSeats] = await connection.execute(checkQuery, [room, ...seatIds]);
+
+    if ((existingSeats as any[]).length > 0) {
+      await connection.end();
+      return NextResponse.json({
+        error: 'Some seats are already occupied or pending approval',
+        occupiedSeats: (existingSeats as any[]).map(row => row.seat)
+      }, { status: 400 });
+    }
+
+    // Generate unique approval token
+    const approvalToken = crypto.randomUUID(); 
+/*
+    const insertQuery = `
+      INSERT INTO nodelogin.stud_reserv 
+      (username, major, room, seat, date_in, date_out, period_time, admin, status, approval_token, created_at, updated_at) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+    `;
+ */
+ if (source === 'admin') {
+    const staffQuery = `
+      INSERT INTO nodelogin.staff_bookings 
+      (username, major, room, seat, date_in, date_out, period_time, admin, status, approval_token, created_at, updated_at) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+    `;
+      for (const seat of seatIds) {
+       // await connection.execute(staffQuery,  //original
+       //   [username, major, room, seat, approvalToken]); //original
+       console.log('Inserting seat:', seat.seat); // Debug log
+        await connection.execute(staffQuery, [
+          username,
+          major,
+          room,
+          seat.seat,
+          seat.date_in,
+          seat.date_out,
+          seat.period_time,
+          'x',
+          'pending',
+          approvalToken
+        ]);
+      }
+    }else if (source === 'student') {
+    const studentQuery = `
+      INSERT INTO nodelogin.student_bookings
+      (username, major, room, seat, date_in, date_out, period_time, advisor_name, advisor, admin, status, approval_token, created_at, updated_at) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+    `;
+      for (const seat of seats) {
+        console.log('Inserting seat:', seat.seat);
+         await connection.execute(studentQuery, [
+          username,
+          major,
+          room,
+          seat.seat,
+          seat.date_in,
+          seat.date_out,
+          seat.period_time,
+          seat.advisor_name,
+          'x',
+          'x',
+          'pending',
+          approvalToken
+        ]);
+
+      }
+  }
+    //  Insert with better error handling
+   /* for (const seat of seats) {
+      try {
+        if (source === 'admin') { console.log('Inserting seat:', seat.seat); // Debug log
+        await connection.execute(staffQuery, [
+          username,
+          major,
+          room,
+          seat.seat,
+          seat.date_in,
+          seat.date_out,
+          seat.period_time,
+          'x',
+          'pending',
+          approvalToken
+        ]); } // 18 Nov 2568
+        else if (source === 'student') {console.log('Inserting seat:', seat.seat); // Debug log
+        await connection.execute(studentQuery, [
+          username,
+          major,
+          room,
+          seat.seat,
+          seat.date_in,
+          seat.date_out,
+          seat.period_time,
+          seat.advisor_name,
+          'x',
+          'x',
+          'pending',
+          approvalToken
+        ]);}
+        //console.log('Inserting seat:', seat.seat);  Debug log original
+       /* original await connection.execute(insertQuery, [ 
+          username,
+          major,
+          room,
+          seat.seat,
+          seat.date_in,
+          seat.date_out,
+          seat.period_time,
+          'x',
+          'pending',
+          approvalToken
+        ]);*/
+      } catch (insertError) {
+        console.error('Error inserting seat:', seat.seat, insertError);
+        throw insertError; // Re-throw to be caught by outer catch
+      }
+    }
+    await connection.end();
+    // Send confirmation email if email is provided
+      try {
+  const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+      user: process.env.EMAIL_USER,
+      pass: process.env.EMAIL_PASS
+    }
+  });
+
+  let approvalLink, emailTo, emailSubject, emailHtml;
+   const seatDetails = seats.map((seat: any) => `
+    <li style="padding: 8px 0; color: #333;">
+      <strong>Seat ${seat.seat}:</strong> ${seat.date_in} to ${seat.date_out} (${seat.period_time})
+    </li>
+  `).join('');
+
+  const confirmLink = `${process.env.NEXT_PUBLIC_BASE_URL}/api/approve?token=${approvalToken}&action=confirm`;
+  const rejectLink = `${process.env.NEXT_PUBLIC_BASE_URL}/api/approve?token=${approvalToken}&action=reject`;
+
+if (source === 'admin') {
+        approvalLink = `${process.env.NEXT_PUBLIC_BASE_URL}/approve?token=${approvalToken}&type=admin`;
+        emailTo = `process.env.EMAIL_USER`; // Admin email format
+        emailSubject = 'ขออนุมัติจากผศ.ดร.ปรวัน แพทยานนท์';
+        emailHtml =  `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+      </head>
+      <body style="margin: 0; padding: 0; background-color: #f5f5f5; font-family: Arial, sans-serif;">
+        <div style="max-width: 600px; margin: 40px auto; background-color: white; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+          
+          <!-- Header -->
+          <div style="background: gray; padding: 30px; text-align: center;">
+            <h1 style="color: white; margin: 0; font-size: 28px;">คำขออนุมัติการจองห้อง</h2>
+          </div>
+          
+          <!-- Content -->
+          <div style="padding: 30px;">
+            <p style="font-size: 16px; color: #333; margin-bottom: 20px;">
+              เรียน <strong>ผศ.ดร.ปรวัน แพทยานนท์</strong> (ผู้อนุมัติรายการจองห้อง)
+            </p>
+            
+            <p style="font-size: 15px; color: #555; line-height: 1.6;">
+              ผม/ดิฉัน <strong>${username}</strong> ได้ทำรายการจองห้องคอมพิวเตอร์ <strong>${room}</strong> 
+              ของวิทยาลัยนวัตกรรมสื่อสารสังคม ผ่านทางเว็บไซต์
+            </p>
+            
+            <p style="font-size: 15px; color: #555; line-height: 1.6;">
+              ทั้งนี้ ใคร่ขอรบกวนให้ท่านตรวจสอบรายละเอียดการยืม และอนุมัติหรือไม่อนุมัติรายการยืมดังกล่าว โดยกดปุ่มด้านล่าง
+            </p>
+            
+            <!-- Booking Details Box -->
+            <div style="background-color: #f8f9fa;  padding: 20px; margin: 25px 0; border-radius: 5px;">
+              <h3 style="margin-top: 0; color: #667eea; font-size: 18px; margin-bottom: 15px;">รายละเอียดการจอง</h3>
+              <ul style="list-style: none; padding: 0; margin: 0;">
+                ${seatDetails}
+              </ul>
+              <p style="margin: 15px 0 0 0; color: #666; font-size: 14px;">
+                <strong>วันที่ขอ:</strong> ${new Date().toLocaleString('th-TH')}
+              </p>
+            </div>
+                  
+            <!-- Confirm Button -->
+            <div style="text-align: center; margin: 30px 0;">
+              <a href="${confirmLink}" 
+                 style="background-color: #4CAF50; 
+                        color: white; 
+                        padding: 15px 50px; 
+                        text-decoration: none; 
+                        border-radius: 8px; 
+                        font-size: 18px;
+                        font-weight: bold;
+                        display: inline-block;
+                        box-shadow: 0 4px 6px rgba(76, 175, 80, 0.3);">
+                 อนุมัติ (CONFIRM)
+              </a>
+            </div>
+               <hr style="border: none; border-top: 1px solid #e0e0e0; margin: 30px 0;">
+            
+            <!-- Reject Section with Textarea -->
+            <div style="background-color: #fff3f3; border: 2px solid #f44336; border-radius: 8px; padding: 25px; margin-top: 30px;">
+              <h3 style="color: #f44336; margin-top: 0; font-size: 18px; margin-bottom: 15px;">
+                คำขอปฏิเสธ
+              </h3>
+              
+              <p style="font-size: 14px; color: #666; margin-bottom: 15px;">
+                กรุณาระบุเหตุผลในช่องด้านล่าง 
+              </p>
+              
+              <textarea 
+                rows="4" 
+                style="width: 100%; 
+                       padding: 12px; 
+                       border: 2px solid #ddd; 
+                       border-radius: 5px; 
+                       font-size: 14px; 
+                       font-family: Arial, sans-serif;
+                       box-sizing: border-box;
+                       resize: vertical;"></textarea>
+              
+              <div style="text-align: center; margin-top: 20px;">
+                <a href="${rejectLink}" 
+                   style="background-color: #f44336; 
+                          color: white; 
+                          padding: 12px 40px; 
+                          text-decoration: none; 
+                          border-radius: 8px; 
+                          font-size: 16px;
+                          font-weight: bold;
+                          display: inline-block;
+                          box-shadow: 0 4px 6px rgba(244, 67, 54, 0.3);">
+                   ปฏิเสธ (REJECT)
+                </a>
+              </div>
+            </div>
+            
+          </div>
+          
+          <!-- Footer -->
+          <div style="background-color: #f8f9fa; padding: 20px; text-align: center; border-radius: 0 0 10px 10px; border-top: 1px solid #e0e0e0;">
+            <p style="margin: 0; font-size: 13px; color: #666;">
+              วิทยาลัยนวัตกรรมสื่อสารสังคม<br>
+              ระบบจองห้องคอมพิวเตอร์
+            </p>
+          </div>
+          
+        </div>
+      </body>
+      </html>
+    `;
+      } else if (source === 'student') {
+  approvalLink = `${process.env.NEXT_PUBLIC_BASE_URL}/approve?token=${approvalToken}&type=student`;
+  
+  try {
+    // First, query the database to get advisor's email based on advisor_name
+    const [advisorRows] = await connection.execute(
+      'SELECT staff_name, staff_email FROM cosci_system.staff WHERE staff_name = ? LIMIT 1',
+      [seats[0].advisor_name] // Assuming all seats have the same advisor
+    );
+    
+    if ((advisorRows as any[]).length === 0) {
+      console.error('Advisor not found in database');
+      throw new Error('Advisor not found');
+    }
+    
+    const advisorData = (advisorRows as any[])[0];
+    const advisorName = advisorData.staff_name;
+    const advisorEmail = advisorData.staff_email;
+    
+    console.log(`Found advisor: ${advisorName}, Email: ${advisorEmail}`);
+    
+    // Email 1: Send to the advisor
+    await transporter.sendMail({
+      from: process.env.EMAIL_USER,
+      to: advisorEmail, // Use the queried email
+      subject: `ขออนุมัติจาก${advisorName}`,
+      html: `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+      </head>
+      <body style="margin: 0; padding: 0; background-color: #f5f5f5; font-family: Arial, sans-serif;">
+        <div style="max-width: 600px; margin: 40px auto; background-color: white; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+          
+          <!-- Header -->
+          <div style="background: gray; padding: 30px; text-align: center;">
+            <h1 style="color: white; margin: 0; font-size: 28px;">คำขออนุมัติการจองห้อง</h1>
+          </div>
+          
+          <!-- Content -->
+          <div style="padding: 30px;">
+            <p style="font-size: 16px; color: #333; margin-bottom: 20px;">
+              เรียน <strong>${advisorName}</strong> (ผู้อนุมัติรายการจองที่นั่งในห้องสำหรับนิสิต)
+            </p>
+            
+            <p style="font-size: 15px; color: #555; line-height: 1.6;">
+              ผม/ดิฉัน <strong>${username}</strong> ได้ทำรายการจองห้องคอมพิวเตอร์ <strong>${room}</strong> 
+              ของวิทยาลัยนวัตกรรมสื่อสารสังคม ผ่านทางเว็บไซต์
+            </p>
+            
+            <p style="font-size: 15px; color: #555; line-height: 1.6;">
+              ทั้งนี้ ใคร่ขอรบกวนให้ท่านตรวจสอบรายละเอียดการจอง และอนุมัติหรือไม่อนุมัติรายการจองดังกล่าว โดยกดปุ่มด้านล่าง
+            </p>
+            
+            <!-- Booking Details Box -->
+            <div style="background-color: #f8f9fa; padding: 20px; margin: 25px 0; border-radius: 5px;">
+              <h3 style="margin-top: 0; color: #667eea; font-size: 18px; margin-bottom: 15px;">รายละเอียดการจอง</h3>
+              <ul style="list-style: none; padding: 0; margin: 0;">
+                ${seatDetails}
+              </ul>
+              <p style="margin: 15px 0 0 0; color: #666; font-size: 14px;">
+                <strong>วันที่ขอ:</strong> ${new Date().toLocaleString('th-TH')}
+              </p>
+            </div>
+                  
+            <!-- Confirm Button -->
+            <div style="text-align: center; margin: 30px 0;">
+              <a href="${confirmLink}" 
+                 style="background-color: #4CAF50; 
+                        color: white; 
+                        padding: 15px 50px; 
+                        text-decoration: none; 
+                        border-radius: 8px; 
+                        font-size: 18px;
+                        font-weight: bold;
+                        display: inline-block;
+                        box-shadow: 0 4px 6px rgba(76, 175, 80, 0.3);">
+                 อนุมัติ (CONFIRM)
+              </a>
+            </div>
+            <hr style="border: none; border-top: 1px solid #e0e0e0; margin: 30px 0;">
+            
+            <!-- Reject Section -->
+            <div style="background-color: #fff3f3; border: 2px solid #f44336; border-radius: 8px; padding: 25px; margin-top: 30px;">
+              <h3 style="color: #f44336; margin-top: 0; font-size: 18px; margin-bottom: 15px;">
+                คำขอปฏิเสธ
+              </h3>
+              
+              <p style="font-size: 14px; color: #666; margin-bottom: 15px;">
+                กรุณาระบุเหตุผลในช่องด้านล่าง 
+              </p>
+              
+              <textarea 
+                rows="4" 
+                style="width: 100%; 
+                       padding: 12px; 
+                       border: 2px solid #ddd; 
+                       border-radius: 5px; 
+                       font-size: 14px; 
+                       font-family: Arial, sans-serif;
+                       box-sizing: border-box;
+                       resize: vertical;"></textarea>
+              
+              <div style="text-align: center; margin-top: 20px;">
+                <a href="${rejectLink}" 
+                   style="background-color: #f44336; 
+                          color: white; 
+                          padding: 12px 40px; 
+                          text-decoration: none; 
+                          border-radius: 8px; 
+                          font-size: 16px;
+                          font-weight: bold;
+                          display: inline-block;
+                          box-shadow: 0 4px 6px rgba(244, 67, 54, 0.3);">
+                   ปฏิเสธ (REJECT)
+                </a>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Footer -->
+          <div style="background-color: #f8f9fa; padding: 20px; text-align: center; border-radius: 0 0 10px 10px; border-top: 1px solid #e0e0e0;">
+            <p style="margin: 0; font-size: 13px; color: #666;">
+              วิทยาลัยนวัตกรรมสื่อสารสังคม มหาวิทยาลัยศรีนครินทรวิโรฒ<br>
+              ระบบจองห้องคอมพิวเตอร์
+            </p>
+          </div>
+        </div>
+      </body>
+      </html>
+      `
+    });
+    console.log(`Email sent successfully to advisor: ${advisorEmail}`);
+
+    // Email 2: Send to the leader (ผศ.ดร.ปรวัน แพทยานนท์)
+    const leaderEmail = process.env.EMAIL_USER; // or specify the leader's email
+    await transporter.sendMail({
+      from: process.env.EMAIL_USER,
+      to: leaderEmail,
+      subject: 'ขออนุมัติจากผศ.ดร.ปรวัน แพทยานนท์',
+      html: `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+      </head>
+      <body style="margin: 0; padding: 0; background-color: #f5f5f5; font-family: Arial, sans-serif;">
+        <div style="max-width: 600px; margin: 40px auto; background-color: white; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+          
+          <!-- Header -->
+          <div style="background: gray; padding: 30px; text-align: center;">
+            <h1 style="color: white; margin: 0; font-size: 28px;">คำขออนุมัติการจองห้อง</h1>
+          </div>
+          
+          <!-- Content -->
+          <div style="padding: 30px;">
+            <p style="font-size: 16px; color: #333; margin-bottom: 20px;">
+              เรียน <strong>ผศ.ดร.ปรวัน แพทยานนท์</strong> (ผู้อนุมัติรายการจองห้อง)
+            </p>
+            
+            <p style="font-size: 15px; color: #555; line-height: 1.6;">
+              นิสิต <strong>${username}</strong> ได้ทำรายการจองห้องคอมพิวเตอร์ <strong>${room}</strong> 
+              ของวิทยาลัยนวัตกรรมสื่อสารสังคม ผ่านทางเว็บไซต์
+            </p>
+            
+            <p style="font-size: 15px; color: #555; line-height: 1.6;">
+              อาจารย์ที่ปรึกษา: <strong>${advisorName}</strong>
+            </p>
+            
+            <p style="font-size: 15px; color: #555; line-height: 1.6;">
+              ทั้งนี้ ใคร่ขอรบกวนให้ท่านตรวจสอบรายละเอียดการจอง และอนุมัติหรือไม่อนุมัติรายการจองดังกล่าว โดยกดปุ่มด้านล่าง
+            </p>
+            
+            <!-- Booking Details Box -->
+            <div style="background-color: #f8f9fa; padding: 20px; margin: 25px 0; border-radius: 5px;">
+              <h3 style="margin-top: 0; color: #667eea; font-size: 18px; margin-bottom: 15px;">รายละเอียดการจอง</h3>
+              <ul style="list-style: none; padding: 0; margin: 0;">
+                ${seatDetails}
+              </ul>
+              <p style="margin: 15px 0 0 0; color: #666; font-size: 14px;">
+                <strong>วันที่ขอ:</strong> ${new Date().toLocaleString('th-TH')}
+              </p>
+            </div>
+                  
+            <!-- Confirm Button -->
+            <div style="text-align: center; margin: 30px 0;">
+              <a href="${confirmLink}" 
+                 style="background-color: #4CAF50; 
+                        color: white; 
+                        padding: 15px 50px; 
+                        text-decoration: none; 
+                        border-radius: 8px; 
+                        font-size: 18px;
+                        font-weight: bold;
+                        display: inline-block;
+                        box-shadow: 0 4px 6px rgba(76, 175, 80, 0.3);">
+                 อนุมัติ (CONFIRM)
+              </a>
+            </div>
+            <hr style="border: none; border-top: 1px solid #e0e0e0; margin: 30px 0;">
+            
+            <!-- Reject Section -->
+            <div style="background-color: #fff3f3; border: 2px solid #f44336; border-radius: 8px; padding: 25px; margin-top: 30px;">
+              <h3 style="color: #f44336; margin-top: 0; font-size: 18px; margin-bottom: 15px;">
+                คำขอปฏิเสธ
+              </h3>
+              
+              <p style="font-size: 14px; color: #666; margin-bottom: 15px;">
+                กรุณาระบุเหตุผลในช่องด้านล่าง 
+              </p>
+              
+              <textarea 
+                rows="4" 
+                style="width: 100%; 
+                       padding: 12px; 
+                       border: 2px solid #ddd; 
+                       border-radius: 5px; 
+                       font-size: 14px; 
+                       font-family: Arial, sans-serif;
+                       box-sizing: border-box;
+                       resize: vertical;"></textarea>
+              
+              <div style="text-align: center; margin-top: 20px;">
+                <a href="${rejectLink}" 
+                   style="background-color: #f44336; 
+                          color: white; 
+                          padding: 12px 40px; 
+                          text-decoration: none; 
+                          border-radius: 8px; 
+                          font-size: 16px;
+                          font-weight: bold;
+                          display: inline-block;
+                          box-shadow: 0 4px 6px rgba(244, 67, 54, 0.3);">
+                   ปฏิเสธ (REJECT)
+                </a>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Footer -->
+          <div style="background-color: #f8f9fa; padding: 20px; text-align: center; border-radius: 0 0 10px 10px; border-top: 1px solid #e0e0e0;">
+            <p style="margin: 0; font-size: 13px; color: #666;">
+              วิทยาลัยนวัตกรรมสื่อสารสังคม มหาวิทยาลัยศรีนครินทรวิโรฒ<br>
+              ระบบจองห้องคอมพิวเตอร์
+            </p>
+          </div>
+        </div>
+      </body>
+      </html>
+      `
+    });
+    console.log(`Notification email sent to leader: ${leaderEmail}`);
+
+  } catch (emailError) {
+    console.error('Email sending failed:', emailError);
+    // Don't fail the request if email fails - reservation is still created
+  }
+} return NextResponse.json({
+      success: true,
+      message: `Reservation created. Please check your email for approval link.`,
+      approvalToken,
+      expiresAt,
+      userType: source
+    });
+  
+ // } catch (err) {
+ //   console.error('Database error:', err);
+ //   if (connection) {
+ //     try {
+  //      await connection.end();
+  //    } catch (closeErr) {
+ //       console.error('Error closing connection:', closeErr);
+ //     }
+ //   }
+ //   return NextResponse.json({ error: (err as Error).message }, { status: 500 });
+ // }
+//}
+ 
+ 
+  /*await transporter.sendMail({
+    from: process.env.EMAIL_USER,
+    to: "naruesorn@g.swu.ac.th",
+    subject: "ขออนุมัติจากผศ.ดร.ปรวัน แพทยานนท์",
+    html: `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+      </head>
+      <body style="margin: 0; padding: 0; background-color: #f5f5f5; font-family: Arial, sans-serif;">
+        <div style="max-width: 600px; margin: 40px auto; background-color: white; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+          
+          <!-- Header -->
+          <div style="background: gray; padding: 30px; text-align: center;">
+            <h1 style="color: white; margin: 0; font-size: 28px;">คำขออนุมัติการจองห้อง</h2>
+          </div>
+          
+          <!-- Content -->
+          <div style="padding: 30px;">
+            <p style="font-size: 16px; color: #333; margin-bottom: 20px;">
+              เรียน <strong>ผศ.ดร.ปรวัน แพทยานนท์</strong> (ผู้อนุมัติรายการจองห้อง)
+            </p>
+            
+            <p style="font-size: 15px; color: #555; line-height: 1.6;">
+              ผม/ดิฉัน <strong>${username}</strong> ได้ทำรายการจองห้องคอมพิวเตอร์ <strong>${room}</strong> 
+              ของวิทยาลัยนวัตกรรมสื่อสารสังคม ผ่านทางเว็บไซต์
+            </p>
+            
+            <p style="font-size: 15px; color: #555; line-height: 1.6;">
+              ทั้งนี้ ใคร่ขอรบกวนให้ท่านตรวจสอบรายละเอียดการยืม และอนุมัติหรือไม่อนุมัติรายการยืมดังกล่าว โดยกดปุ่มด้านล่าง
+            </p>
+            
+            <!-- Booking Details Box -->
+            <div style="background-color: #f8f9fa;  padding: 20px; margin: 25px 0; border-radius: 5px;">
+              <h3 style="margin-top: 0; color: #667eea; font-size: 18px; margin-bottom: 15px;">รายละเอียดการจอง</h3>
+              <ul style="list-style: none; padding: 0; margin: 0;">
+                ${seatDetails}
+              </ul>
+              <p style="margin: 15px 0 0 0; color: #666; font-size: 14px;">
+                <strong>วันที่ขอ:</strong> ${new Date().toLocaleString('th-TH')}
+              </p>
+            </div>
+                  
+            <!-- Confirm Button -->
+            <div style="text-align: center; margin: 30px 0;">
+              <a href="${confirmLink}" 
+                 style="background-color: #4CAF50; 
+                        color: white; 
+                        padding: 15px 50px; 
+                        text-decoration: none; 
+                        border-radius: 8px; 
+                        font-size: 18px;
+                        font-weight: bold;
+                        display: inline-block;
+                        box-shadow: 0 4px 6px rgba(76, 175, 80, 0.3);">
+                 อนุมัติ (CONFIRM)
+              </a>
+            </div>
+               <hr style="border: none; border-top: 1px solid #e0e0e0; margin: 30px 0;">
+            
+            <!-- Reject Section with Textarea -->
+            <div style="background-color: #fff3f3; border: 2px solid #f44336; border-radius: 8px; padding: 25px; margin-top: 30px;">
+              <h3 style="color: #f44336; margin-top: 0; font-size: 18px; margin-bottom: 15px;">
+                คำขอปฏิเสธ
+              </h3>
+              
+              <p style="font-size: 14px; color: #666; margin-bottom: 15px;">
+                กรุณาระบุเหตุผลในช่องด้านล่าง 
+              </p>
+              
+              <textarea 
+                rows="4" 
+                style="width: 100%; 
+                       padding: 12px; 
+                       border: 2px solid #ddd; 
+                       border-radius: 5px; 
+                       font-size: 14px; 
+                       font-family: Arial, sans-serif;
+                       box-sizing: border-box;
+                       resize: vertical;"></textarea>
+              
+              <div style="text-align: center; margin-top: 20px;">
+                <a href="${rejectLink}" 
+                   style="background-color: #f44336; 
+                          color: white; 
+                          padding: 12px 40px; 
+                          text-decoration: none; 
+                          border-radius: 8px; 
+                          font-size: 16px;
+                          font-weight: bold;
+                          display: inline-block;
+                          box-shadow: 0 4px 6px rgba(244, 67, 54, 0.3);">
+                   ปฏิเสธ (REJECT)
+                </a>
+              </div>
+            </div>
+            
+          </div>
+          
+          <!-- Footer -->
+          <div style="background-color: #f8f9fa; padding: 20px; text-align: center; border-radius: 0 0 10px 10px; border-top: 1px solid #e0e0e0;">
+            <p style="margin: 0; font-size: 13px; color: #666;">
+              วิทยาลัยนวัตกรรมสื่อสารสังคม<br>
+              ระบบจองห้องคอมพิวเตอร์
+            </p>
+          </div>
+          
+        </div>
+      </body>
+      </html>
+    `
+  });*/
+
+        //    <p>Dear ${username},</p>
+        //    <p>Your reservation has been confirmed:</p>
+        //    <p>Room: ${room}</p>
+       //     <p>Seats: ${seatIds.join(', ')}</p>
+       //     <a href="${confirmLink}">View Details</a>
+
+ 
+
+/* eslint-enable */
+// POST method with auto-update for expired reservations
+export async function POST(request: Request) {
+  const { searchParams } = new URL(request.url);
+  const source = searchParams.get('source');
+  
+  const data = await request.json();
+  const { username, major, room, seats, dashboard, ...reservationData } = data;
+  
+  let connection;
+  try {
+    connection = await mysql.createConnection({
+      host: process.env.DB_HOST,
+      user: process.env.DB_USER,
+      password: process.env.DB_PASSWORD,
+      database: process.env.DB_NAME,
+      charset: 'utf8mb4'
+    });
+
+    // First, update any expired reservations
+    const expiredCount = await updateExpiredReservations(connection);
+    console.log(`POST: Updated ${expiredCount} expired reservations`);
+
+    // Now you have everything you need
+    console.log('Dashboard:', dashboard);
+    
+    // Validation: Check if required fields are present
+    if (!username || !major || !room || !seats || !Array.isArray(seats)) {
+      await connection.end();
+      return NextResponse.json({
+        error: "Missing required fields: username, major, room, and seats are required"
+      }, { status: 400 });
+    }
+    
+    // Check if any seats are already occupied
+    const seatIds = seats.map((s: any) => s.seat);
+    const placeholders = seatIds.map(() => '?').join(',');
+    const checkQuery = `
+      SELECT seat FROM nodlogin.staff_bookings
+      WHERE room = ? AND seat IN (${placeholders}) AND (status = 'occupied' OR status = 'pending')
+    `;
+    
+    const [existingSeats] = await connection.execute(checkQuery, [room, ...seatIds]);
+    
+    if ((existingSeats as any[]).length > 0) {
+      await connection.end();
+      return NextResponse.json({
+        error: "Some seats are already occupied"
+      }, { status: 409 });
+    }
+
+    // Insert reservations for all seats
+    const insertQuery = `
+      INSERT INTO nodlogin.staff_bookings 
+      (username, major, room, seat, date_in, date_out, period_time, status, advisor) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+    `;
+
+    // Insert each seat reservation
+    for (const seatData of seats) {
+      await connection.execute(insertQuery, [
+        username,
+        major,
+        room,
+        seatData.seat,
+        seatData.date_in,
+        seatData.date_out,
+        seatData.period_time,
+        seatData.advisor || null
+      ]);
+    }
+
+    // Send email based on dashboard
+    try {
+      const emailConfig = {
+        dashboard1: {
+          to: 'admin1@example.com',
+          subject: 'New Reservation - Dashboard 1'
+        },
+        dashboard2: {
+          to: 'admin2@example.com',
+          subject: 'New Reservation - Dashboard 2'
+        }
+      };
+      
+      const config = emailConfig[dashboard as keyof typeof emailConfig];
+      
+      if (config) {
+        // Create seat details HTML
+        const seatDetailsHtml = seats.map((s: any) => `
+          <tr>
+            <td style="padding: 8px; border: 1px solid #ddd;">${s.seat}</td>
+            <td style="padding: 8px; border: 1px solid #ddd;">${s.date_in}</td>
+            <td style="padding: 8px; border: 1px solid #ddd;">${s.date_out}</td>
+            <td style="padding: 8px; border: 1px solid #ddd;">${s.period_time}</td>
+          </tr>
+        `).join('');
+
+        await transporter.sendMail({
+          from: process.env.EMAIL_USER,
+          to: config.to,
+          subject: config.subject,
+          html: `
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+              <h2 style="color: #333;">New Reservation Request</h2>
+              <div style="background-color: #f5f5f5; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                <p><strong>Username:</strong> ${username}</p>
+                <p><strong>Major:</strong> ${major}</p>
+                <p><strong>Room:</strong> ${room}</p>
+              </div>
+              <h3 style="color: #333;">Seat Details:</h3>
+              <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
+                <thead>
+                  <tr style="background-color: #4CAF50; color: white;">
+                    <th style="padding: 10px; border: 1px solid #ddd;">Seat</th>
+                    <th style="padding: 10px; border: 1px solid #ddd;">Check In</th>
+                    <th style="padding: 10px; border: 1px solid #ddd;">Check Out</th>
+                    <th style="padding: 10px; border: 1px solid #ddd;">Period</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${seatDetailsHtml}
+                </tbody>
+              </table>
+              <p style="color: #666; font-size: 12px; margin-top: 30px;">
+                This is an automated notification from the reservation system.
+              </p>
+            </div>
+          `
+        });
+        console.log('Email sent successfully to:', config.to);
+      }
+    } catch (emailError) {
+      console.error('Email error (non-critical):', emailError);
+      // Don't fail the request if email fails
+    }
+    
+    await connection.end();
+    
+    return NextResponse.json({ 
+      success: true,
+      message: 'Reservations created successfully',
+      seats: seatIds
+    });
+    
+  } catch (error) {
+    if (connection) {
+      try {
+        await connection.end();
+      } catch (endError) {
+        console.error('Error closing connection:', endError);
+      }
+    }
+    console.error('Database error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' }, 
+      { status: 500 }
+    );
+  }
+}
+dashboard1: {
+  to: 'your-actual-email1@example.com',
+  subject: 'New Reservation - Dashboard 1'
+},
+dashboard2: {
+  to: 'your-actual-email2@example.com', 
+  subject: 'New Reservation - Dashboard 2'
+}
