@@ -10,7 +10,7 @@ export async function GET() {
       password: process.env.DB_PASSWORD,
       database: process.env.DB_NAME3
     });
-    const [rows]: any = await connection.query('SELECT DISTINCT username, date_in, date_out, period_time, purpose FROM cosci_reservation.BookingTest WHERE status = "occupied"');
+    const [rows]: any = await connection.query('SELECT DISTINCT username, room, date_in, date_out, period_time, purpose FROM cosci_reservation.BookingTest WHERE status = "occupied"');
     return NextResponse.json({ reservations: rows });
   } catch (error) {
     return NextResponse.json({ purpose: '' }, { status: 500 });

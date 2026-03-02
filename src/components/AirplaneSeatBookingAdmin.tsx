@@ -20,6 +20,7 @@ const AirplaneSeatBookingAdmin: React.FC<AirplaneSeatBookingAdminProps> = ({ tab
     const [inputMode, setInputMode] = useState('all');
     const [bookings, setBookings] = useState({});
     const [pendingSeats, setPendingSeats] = useState({}); 
+    const [activeSeats, setActiveSeats] = useState({});
     const [isLoading, setIsLoading] = useState(false);
     const [dateTimeInputs, setDateTimeInputs] = useState({});
     const [purpose, setPurpose] = useState(''); // Add this new state
@@ -165,10 +166,23 @@ const [eventPurpose, setEventPurpose] = useState<string[]>([]);
           const data = await response.json();
           const reservationsByRoom:any = {};
           const pendingByRoom:any = {};
+          const activeByRoom: any = {};  // ADDED
           
           if (data.reservations && Array.isArray(data.reservations)) {
             data.reservations.forEach(reservation => {
               if (reservation.room && reservation.seat) {
+                // ✅ ADDED: Track active bookings (currently in use)
+            if (reservation.isActive) {
+              if (!activeByRoom[reservation.room]) {
+                activeByRoom[reservation.room] = [];
+              }
+              activeByRoom[reservation.room].push({
+                seat: reservation.seat,
+                date_in: reservation.date_in,
+                date_out: reservation.date_out,
+                period_time: reservation.period_time
+              });
+            }
                 if (reservation.status === 'pending') {
                   if (!pendingByRoom[reservation.room]) {
                     pendingByRoom[reservation.room] = [];
@@ -178,13 +192,20 @@ const [eventPurpose, setEventPurpose] = useState<string[]>([]);
                   if (!reservationsByRoom[reservation.room]) {
                     reservationsByRoom[reservation.room] = [];
                   }
-                  reservationsByRoom[reservation.room].push(reservation.seat);
+                 //original reservationsByRoom[reservation.room].push(reservation.seat);
+                 reservationsByRoom[reservation.room].push({
+                seat: reservation.seat,
+                date_in: reservation.date_in,
+                date_out: reservation.date_out,
+                period_time: reservation.period_time
+              });
                 }
               }
             });
           }
           setBookings(reservationsByRoom);
           setPendingSeats(pendingByRoom);
+           setActiveSeats(activeByRoom);  //  ADDED
         } else {
           console.warn('Failed to fetch reservations:', response.status);
         }
@@ -192,6 +213,7 @@ const [eventPurpose, setEventPurpose] = useState<string[]>([]);
         console.error('Error fetching reservations:', error);
         setBookings({});
         setPendingSeats({});
+        setActiveSeats({});  // ✅ ADDED
       } finally {
         setIsLoading(false);
       }
@@ -210,6 +232,18 @@ const fetchEventPurpose = async () => {
     console.error('Error fetching event purpose:', error);
   }
 };
+
+// Add this useEffect to auto-refresh every minute
+useEffect(() => {
+  if (selectedRoom) {
+    const interval = setInterval(() => {
+      console.log('Auto-refreshing seat status...');
+      fetchReservations();
+    }, 60000); // Refresh every 60 seconds
+
+    return () => clearInterval(interval);
+  }
+}, [selectedRoom]);
 
 useEffect(() => {
   fetchEventPurpose();
@@ -232,16 +266,47 @@ useEffect(() => {
       const seatPattern = room.layout[0].seatWidth;
       const seatLetters = seatPattern.replace(/\s+/g, '').split('');
       
+      const selectedDateIn = inputMode === 'add' ? formInput.dateIn : bulkDateTime.dateIn;
+      const selectedDateOut = inputMode === 'add' ? formInput.dateOut : bulkDateTime.dateOut;
+      const selectedPeriodTime = inputMode === 'add' ? formInput.periodTime : bulkDateTime.periodTime;
+
       for (let row = 1; row <= room.rows; row++) {
         const rowSeats = [];
         
         seatLetters.forEach((letter) => {
           const seatId = `${row}${letter}`;
+
+          let isOccupied = false;
+          let isPending = false;
+          let isActive = false;  // ✅ ADDED: Track if seat is actively being used right now
+
+          // ✅ ADDED: Check if seat is currently active (being used right now)
+      if (activeSeats[room.id]) {
+        isActive = activeSeats[room.id].some((booking: any) => booking.seat === seatId);
+      }
+      
+      // Only check conflicts if we're looking at future bookings (not current active ones)
+      if (!isActive && bookings[room.id]) {
+        isOccupied = bookings[room.id].some((booking: any) => 
+          booking.seat === seatId && 
+          checkDateTimeConflict(booking, selectedDateIn, selectedDateOut, selectedPeriodTime)
+        );
+      }
+      
+      if (!isActive && pendingSeats[room.id]) {
+        isPending = pendingSeats[room.id].some((booking: any) => 
+          booking.seat === seatId && 
+          checkDateTimeConflict(booking, selectedDateIn, selectedDateOut, selectedPeriodTime)
+        );
+      }
+          
           rowSeats.push({
             id: seatId,
             occupied: bookings[room.id]?.includes(seatId) || false,
             unused: room.unused.includes(seatId),
-            selected: selectedSeats.includes(seatId)
+            selected: selectedSeats.includes(seatId),
+            pending: isPending,
+            active: isActive  // ✅ ADDED
           });
         });
         
@@ -643,7 +708,9 @@ const handleBookingWithData = async (seatId, seatData) => {
       
       if (seat.unused) {
         className += " bg-gray-800 border-gray-900 text-white";
-      } else if (seat.occupied) {
+      } else if (seat.active) {  // ✅ ADDED: Active seats (in use RIGHT NOW) show as red
+        className += " bg-red-600 border-red-700 text-white animate-pulse";
+      }else if (seat.occupied) {
         className += " bg-red-500 border-red-600 text-white";
       } else if (isPending) {
         className += " bg-yellow-400 border-yellow-500 text-gray-800";
@@ -655,7 +722,8 @@ const handleBookingWithData = async (seatId, seatData) => {
   
       return (
         <div key={seat.id} className={className}>
-          {seat.unused ? 'X' : seat.occupied ? <X className="w-3 h-3 text-white" /> : seat.selected ? <Check className="w-3 h-3 text-white" /> : seat.id.slice(-1)}
+          {seat.unused ? 'X' :seat.active ? '🔴' :  // ✅ ADDED: Show red dot for active seats 
+          seat.occupied ? <X className="w-3 h-3 text-white" /> : seat.selected ? <Check className="w-3 h-3 text-white" /> : seat.id.slice(-1)}
         </div>
       );
     };
@@ -816,12 +884,19 @@ const handleBookingWithData = async (seatId, seatData) => {
       : `${formatDay(dateIn)}-${formatFull(dateOut)}`;
 
     return (
-      <div key={index}>
+  <div key={index}>
+    {selectedRoom?.id === item.room ? (
+      <span>
         <span>{item.purpose}</span> โดย <span>{item.username}</span>
-        <span>  {dateDisplay}</span>
-        {!isSameDay && <span> ({diffDays} day{diffDays > 1 ? 's' : ''})</span>}
-      </div>
-    );
+        <span> {dateDisplay}</span>
+        {!isSameDay }
+        {/*&& <span> ({diffDays} day{diffDays > 1 ? 's' : ''})</span> */}
+      </span>
+    ) : (
+      <span className="text-gray-400 font-normal">No event scheduled at this time</span>
+    )}
+  </div>
+);
   })
 ) : (
   <span className="text-gray-400 font-normal italic">No event scheduled at this time</span>
@@ -848,6 +923,10 @@ const handleBookingWithData = async (seatId, seatData) => {
                   <div className="w-6 h-6 bg-blue-500 border-2 border-blue-600"></div>
                   <span>Selected</span>
                 </div>
+                <div className="flex items-center gap-2">
+    <div className="w-6 h-6 bg-red-600 border-2 border-red-700 animate-pulse"></div>
+    <span>In Use Now</span>
+  </div>
                 <div className="flex items-center gap-2">
                   <div className="w-6 h-6 bg-yellow-400 border-2 border-yellow-500"></div>
                   <span>Pending</span>

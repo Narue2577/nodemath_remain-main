@@ -309,19 +309,55 @@ export async function GET(request: Request) {
     const expiredCount = await updateExpiredReservations(connection);
     console.log(`GET: Updated ${expiredCount} expired reservations`);
 
-   
+   const now = new Date();
+    const currentDate = now.toISOString().split('T')[0]; // YYYY-MM-DD
+    const currentHour = now.getHours();
+    const currentMinute = now.getMinutes();
+    const currentTime = currentHour * 60 + currentMinute
+
+
     const selectQuery = `
       SELECT room, seat, status FROM cosci_reservation.BookingTest
       WHERE (status = 'occupied' OR status = 'pending')
     `;
-
+// ✅ ADDED: Mark seats as "active" if current time is within their booking
+    const enhancedReservations = reservations.map((reservation: any) => {
+      const dateIn = reservation.date_in;
+      const dateOut = reservation.date_out;
+      const periodTime = reservation.period_time;
+      
+      // Check if today is within the booking dates
+      const isWithinDates = currentDate >= dateIn && currentDate <= dateOut;
+      
+      // Check if current time is within the period
+      let isWithinTime = false;
+      if (periodTime && isWithinDates) {
+        const [startTime, endTime] = periodTime.split('-');
+        const [startHour, startMin] = startTime.split(':').map(Number);
+        const [endHour, endMin] = endTime.split(':').map(Number);
+        
+        const startMinutes = startHour * 60 + startMin;
+        const endMinutes = endHour * 60 + endMin;
+        
+        isWithinTime = currentTime >= startMinutes && currentTime <= endMinutes;
+      }
+      
+      return {
+        ...reservation,
+        isActive: isWithinDates && isWithinTime  // ✅ ADDED: Flag for active bookings
+      };
+    });
 
     const [reservations] = await connection.execute(selectQuery);
+    
     await connection.end();
 
     return NextResponse.json({ 
-      reservations,
-      expiredUpdated: expiredCount 
+      //reservations,
+      //expiredUpdated: expiredCount 
+      reservations: enhancedReservations,
+      expiredUpdated: expiredCount,
+      currentTime: now.toISOString()  // ✅ ADDED: Send current time to frontend
     });
   } catch (err) {
     console.error('Database error:', err);
