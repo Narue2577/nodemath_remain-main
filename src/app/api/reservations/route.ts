@@ -320,7 +320,10 @@ export async function GET(request: Request) {
       SELECT room, seat, status FROM cosci_reservation.BookingTest
       WHERE (status = 'occupied' OR status = 'pending')
     `;
-// ✅ ADDED: Mark seats as "active" if current time is within their booking
+
+        const [reservationsResult] = await connection.execute(selectQuery);
+    const reservations = reservationsResult as any[];  // Assign to typed variable
+//  ADDED: Mark seats as "active" if current time is within their booking
     const enhancedReservations = reservations.map((reservation: any) => {
       const dateIn = reservation.date_in;
       const dateOut = reservation.date_out;
@@ -348,7 +351,7 @@ export async function GET(request: Request) {
       };
     });
 
-    const [reservations] = await connection.execute(selectQuery);
+
     
     await connection.end();
 

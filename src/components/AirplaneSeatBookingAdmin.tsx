@@ -259,7 +259,44 @@ useEffect(() => {
     useEffect(() => {
       fetchReservations();
     }, []);
+  // Add this function somewhere after fetchReservations (around line 165 or wherever makes sense)
+// Place it BEFORE generateSeatMap function
+
+const checkDateTimeConflict = (
+  booking: any,
+  selectedDateIn: string,
+  selectedDateOut: string,
+  selectedPeriodTime: string
+) => {
+  if (!booking || !selectedDateIn || !selectedDateOut || !selectedPeriodTime || selectedPeriodTime === 'choose') {
+    return false;
+  }
+
+  // Parse dates
+  const bookingStart = new Date(booking.date_in);
+  const bookingEnd = new Date(booking.date_out);
+  const selectedStart = new Date(selectedDateIn);
+  const selectedEnd = new Date(selectedDateOut);
+
+  // Check if dates overlap
+  const datesOverlap = !(selectedEnd < bookingStart || selectedStart > bookingEnd);
   
+  if (!datesOverlap) {
+    return false; // No date overlap, so no conflict
+  }
+
+  // If dates overlap, check time periods
+  const bookingPeriod = booking.period_time;
+  
+  // Time period conflict rules
+  const timeConflicts = (period1: string, period2: string) => {
+    if (period1 === period2) return true;
+    if (period1 === '9:00-16:00' || period2 === '9:00-16:00') return true;
+    return false;
+  };
+
+  return timeConflicts(bookingPeriod, selectedPeriodTime);
+};
     // Generate seat map
     const generateSeatMap = (room) => {
       const seatMap = [];
@@ -888,7 +925,7 @@ const handleBookingWithData = async (seatId, seatData) => {
     {selectedRoom?.id === item.room ? (
       <span>
         <span>{item.purpose}</span> โดย <span>{item.username}</span>
-        <span> {dateDisplay}</span>
+        <span> {dateDisplay}</span> | <span> {item.period_time}</span>
         {!isSameDay }
         {/*&& <span> ({diffDays} day{diffDays > 1 ? 's' : ''})</span> */}
       </span>

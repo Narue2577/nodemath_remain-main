@@ -17,6 +17,7 @@ const AirplaneSeatBooking: React.FC<AirplaneSeatBookingProps> = ({ tableHeader }
   const [inputMode, setInputMode] = useState('add');
   const [bookings, setBookings] = useState({});
   const [pendingSeats, setPendingSeats] = useState({}); 
+  const [activeSeats, setActiveSeats] = useState({});
   const [isLoading, setIsLoading] = useState(false);
   const [dateTimeInputs, setDateTimeInputs] = useState({});
   const [selectedAdvisor, setSelectedAdvisor] = useState('');
@@ -122,26 +123,51 @@ const AirplaneSeatBooking: React.FC<AirplaneSeatBookingProps> = ({ tableHeader }
         const data = await response.json();
         const reservationsByRoom:any = {};
         const pendingByRoom:any = {};
+        const activeByRoom: any = {}; 
         
         if (data.reservations && Array.isArray(data.reservations)) {
-          data.reservations.forEach(reservation => {
-            if (reservation.room && reservation.seat) {
-              if (reservation.status === 'pending') {
-                if (!pendingByRoom[reservation.room]) {
-                  pendingByRoom[reservation.room] = [];
-                }
-                pendingByRoom[reservation.room].push(reservation.seat);
-              } else {
-                if (!reservationsByRoom[reservation.room]) {
-                  reservationsByRoom[reservation.room] = [];
-                }
-                reservationsByRoom[reservation.room].push(reservation.seat);
+        data.reservations.forEach(reservation => {
+          if (reservation.room && reservation.seat) {
+            // ✅ ADDED: Track active bookings
+            if (reservation.isActive) {
+              if (!activeByRoom[reservation.room]) {
+                activeByRoom[reservation.room] = [];
               }
+              activeByRoom[reservation.room].push({
+                seat: reservation.seat,
+                date_in: reservation.date_in,
+                date_out: reservation.date_out,
+                period_time: reservation.period_time
+              });
             }
-          });
-        }
+            
+            if (reservation.status === 'pending') {
+              if (!pendingByRoom[reservation.room]) {
+                pendingByRoom[reservation.room] = [];
+              }
+              pendingByRoom[reservation.room].push({
+                seat: reservation.seat,
+                date_in: reservation.date_in,
+                date_out: reservation.date_out,
+                period_time: reservation.period_time
+              });
+            } else {
+              if (!reservationsByRoom[reservation.room]) {
+                reservationsByRoom[reservation.room] = [];
+              }
+              reservationsByRoom[reservation.room].push({
+                seat: reservation.seat,
+                date_in: reservation.date_in,
+                date_out: reservation.date_out,
+                period_time: reservation.period_time
+              });
+            }
+          }
+        });
+      }
         setBookings(reservationsByRoom);
         setPendingSeats(pendingByRoom);
+        setActiveSeats(activeByRoom);
       } else {
         console.warn('Failed to fetch reservations:', response.status);
       }
@@ -149,6 +175,7 @@ const AirplaneSeatBooking: React.FC<AirplaneSeatBookingProps> = ({ tableHeader }
       console.error('Error fetching reservations:', error);
       setBookings({});
       setPendingSeats({});
+      setActiveSeats({});
     } finally {
       setIsLoading(false);
     }
@@ -167,6 +194,34 @@ const AirplaneSeatBooking: React.FC<AirplaneSeatBookingProps> = ({ tableHeader }
       });
   }, []); 
 
+  const fetchEventPurpose = async () => {
+    try {
+      const response = await fetch('/api/event');
+      const data = await response.json();
+      if (response.ok) {
+        setEventPurpose(data.reservations); // array of objects now
+      }
+    } catch (error) {
+      console.error('Error fetching event purpose:', error);
+    }
+  };
+  
+  // Add this useEffect to auto-refresh every minute
+  useEffect(() => {
+    if (selectedRoom) {
+      const interval = setInterval(() => {
+        console.log('Auto-refreshing seat status...');
+        fetchReservations();
+      }, 60000); // Refresh every 60 seconds
+  
+      return () => clearInterval(interval);
+    }
+  }, [selectedRoom]);
+  
+  useEffect(() => {
+    fetchEventPurpose();
+  }, [])
+
    useEffect(() => {
     const timer = setInterval(() => {
       setCurrentTime(new Date());
@@ -179,12 +234,50 @@ const AirplaneSeatBooking: React.FC<AirplaneSeatBookingProps> = ({ tableHeader }
     fetchReservations();
   }, []);
 
+  const checkDateTimeConflict = (
+  booking: any,
+  selectedDateIn: string,
+  selectedDateOut: string,
+  selectedPeriodTime: string
+) => {
+  if (!booking || !selectedDateIn || !selectedDateOut || !selectedPeriodTime || selectedPeriodTime === 'choose') {
+    return false;
+  }
+
+  // Parse dates
+  const bookingStart = new Date(booking.date_in);
+  const bookingEnd = new Date(booking.date_out);
+  const selectedStart = new Date(selectedDateIn);
+  const selectedEnd = new Date(selectedDateOut);
+
+  // Check if dates overlap
+  const datesOverlap = !(selectedEnd < bookingStart || selectedStart > bookingEnd);
+  
+  if (!datesOverlap) {
+    return false; // No date overlap, so no conflict
+  }
+
+  // If dates overlap, check time periods
+  const bookingPeriod = booking.period_time;
+  
+  // Time period conflict rules
+  const timeConflicts = (period1: string, period2: string) => {
+    if (period1 === period2) return true;
+    if (period1 === '9:00-16:00' || period2 === '9:00-16:00') return true;
+    return false;
+  };
+
+  return timeConflicts(bookingPeriod, selectedPeriodTime);
+};
   // Generate seat map
   const generateSeatMap = (room) => {
     const seatMap = [];
     const seatPattern = room.layout[0].seatWidth;
     const seatLetters = seatPattern.replace(/\s+/g, '').split('');
     
+    const selectedDateIn = inputMode === 'add' ? formInput.dateIn : bulkDateTime.dateIn;
+      const selectedDateOut = inputMode === 'add' ? formInput.dateOut : bulkDateTime.dateOut;
+      const selectedPeriodTime = inputMode === 'add' ? formInput.periodTime : bulkDateTime.periodTime;
     for (let row = 1; row <= room.rows; row++) {
       const rowSeats = [];
       
@@ -266,7 +359,7 @@ const AirplaneSeatBooking: React.FC<AirplaneSeatBookingProps> = ({ tableHeader }
         setSelectedSeats([]);
         setDateTimeInputs({});
         setFormInput({ seatId: '', dateIn: '', dateOut: '', periodTime: 'choose' });
-        setPurpose('');  // ✅ ADDED: Reset purpose
+        setPurpose('');  //  ADDED: Reset purpose
         
         // Refresh reservations from database
         await fetchReservations();
@@ -592,15 +685,44 @@ const AirplaneSeatBooking: React.FC<AirplaneSeatBookingProps> = ({ tableHeader }
       </svg>
     </div>
     <div>
-      <p className="text-sm text-gray-600">Event / Purpose</p>
-      <p className="text-lg font-bold text-gray-800">
-        {eventPurpose ? eventPurpose : (
-          <span className="text-gray-400 font-normal italic">No event scheduled at this time</span>
-        )}
-      </p>
-    </div>
+  <p className="text-sm text-gray-600">Event / Purpose</p>
+  <div className="text-lg font-bold text-gray-800">
+    {/* ✅ Filter first to get only matching events */}
+    {eventPurpose.filter(item => selectedRoom?.id === item.room).length > 0 ? (
+      eventPurpose
+        .filter(item => selectedRoom?.id === item.room)  // ✅ Filter by room
+        .map((item, index) => {
+          const dateIn = new Date(item.date_in);
+          const dateOut = new Date(item.date_out);
+          //const diffDays = Math.ceil((dateOut.getTime() - dateIn.getTime()) / (1000 * 60 * 60 * 24));
+
+          const isSameDay = dateIn.toDateString() === dateOut.toDateString();
+          const formatDay = (d: Date) => d.toLocaleDateString('en-GB', { day: 'numeric' });
+          const formatFull = (d: Date) => d.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+
+          const dateDisplay = isSameDay
+            ? formatFull(dateIn)
+            : `${formatDay(dateIn)}-${formatFull(dateOut)}`;
+
+          return (
+            <div key={index}>
+              <span>
+                <span>{item.purpose}</span> โดย <span>{item.username}</span>
+                <span> {dateDisplay}</span> | <span> {item.period_time}</span>
+                {!isSameDay}
+                {/*{!isSameDay && <span> ({diffDays} day{diffDays > 1 ? 's' : ''})</span>}*/}
+              </span>
+            </div>
+          );
+        })
+    ) : (
+      <span className="text-gray-400 font-normal italic">No event scheduled at this time</span>
+    )}
   </div>
 </div>
+  </div>
+</div>
+
             {/* Seat Map */}
             <div className="bg-white rounded-xl shadow-lg p-6 mb-6 w-full">
               <h2 className="text-xl font-bold mb-4 text-center">Seat Map - {selectedRoom.name}</h2>
